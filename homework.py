@@ -116,6 +116,7 @@ class KernelBuilder:
         tmp1 = self.alloc_scratch("tmp1", VLEN)
         tmp2 = self.alloc_scratch("tmp2", VLEN)
         tmp3 = self.alloc_scratch("tmp3", VLEN)
+        tmp4 = self.alloc_scratch("tmp4", VLEN)
 
         self.add("load", ("vload", self.scratch["rounds"], zero_const))
 
@@ -163,65 +164,71 @@ class KernelBuilder:
                 self.add("debug", ("vcompare", tmp_node_val, [(round, i + j, "node_val") for j in range(VLEN)]))
 
                 # val = val ^ node_val
-                self.add(*("valu", ("^", tmp_val, tmp_val, tmp_node_val)))
+                self.add2(*("valu", ("^", tmp_val, tmp_val, tmp_node_val)))
 
                 # val = val * 4097 + 0x7ED55D16
                 self.add2("valu", ("vbroadcast", tmp1, self.scratch_const(4097)))
                 self.add2("valu", ("vbroadcast", tmp2, self.scratch_const(0x7ED55D16)))
                 self.end_cycle()
-                self.add("valu", ("multiply_add", tmp_val, tmp_val, tmp1, tmp2))
 
-                for j in range(VLEN):
-                    self.add("debug", ("compare", tmp_val + j, (round, i + j, "hash_stage", 0)))
-                self.add("debug", ("vcompare", tmp_val, [(round, i + j, "hash_stage", 0) for j in range(VLEN)]))
+                self.add2("valu", ("multiply_add", tmp_val, tmp_val, tmp1, tmp2))
 
                 self.add2("valu", ("vbroadcast", tmp1, self.scratch_const(0xC761C23C)))
                 self.add2("valu", ("vbroadcast", tmp2, self.scratch_const(19)))
                 self.end_cycle()
-                self.add2(*("valu", ("^", tmp1, tmp_val, tmp1)))
+
+                self.add("debug", ("vcompare", tmp_val, [(round, i + j, "hash_stage", 0) for j in range(VLEN)]))
+
+                self.add2(*("valu", ("^",  tmp1, tmp_val, tmp1)))
                 self.add2(*("valu", (">>", tmp2, tmp_val, tmp2)))
                 self.end_cycle()
-                self.add(*("valu", ("^", tmp_val, tmp1, tmp2)))
+
+                self.add2(*("valu", ("^", tmp_val, tmp1, tmp2)))
+
+                self.add2("valu", ("vbroadcast", tmp1, self.scratch_const(33)))
+                self.add2("valu", ("vbroadcast", tmp2, self.scratch_const(0x165667B1)))
+                self.end_cycle()
 
                 self.add("debug", ("vcompare", tmp_val, [(round, i + j, "hash_stage", 1) for j in range(VLEN)]))
 
                 # val = (val << 5) + (val + 0x165667B1)
                 # val = val * 33 + 0x165667B1
-                self.add2("valu", ("vbroadcast", tmp1, self.scratch_const(33)))
-                self.add2("valu", ("vbroadcast", tmp2, self.scratch_const(0x165667B1)))
+                self.add2("valu", ("multiply_add", tmp_val, tmp_val, tmp1, tmp2))
+
+                self.add2("valu", ("vbroadcast", tmp1, self.scratch_const(0xD3A2646C)))
+                self.add2("valu", ("vbroadcast", tmp2, self.scratch_const(9)))
                 self.end_cycle()
-                self.add("valu", ("multiply_add", tmp_val, tmp_val, tmp1, tmp2))
 
                 self.add("debug", ("vcompare", tmp_val, [(round, i + j, "hash_stage", 2) for j in range(VLEN)]))
 
                 # val = (val << 9) ^ (val + 0xD3A2646C)
-                for j in range(VLEN):
-                    self.add("alu", ("<<", tmp1, tmp_val + j, self.scratch_const(9)))
-                    self.add("alu", ("+",  tmp2, tmp_val + j, self.scratch_const(0xD3A2646C)))
-                    self.add("alu", ("^",  tmp_val + j, tmp1, tmp2))
-                    self.add("debug", ("compare", tmp_val + j, (round, i + j, "hash_stage", 3)))
+                self.add2("valu", ("+",  tmp1, tmp_val, tmp1))
+                self.add2("valu", ("<<", tmp2, tmp_val, tmp2))
+                self.end_cycle()
+
+                self.add2("valu", ("^", tmp_val, tmp1, tmp2))
+
+                self.add2("valu", ("vbroadcast", tmp1, self.scratch_const(9)))
+                self.add2("valu", ("vbroadcast", tmp2, self.scratch_const(0xFD7046C5)))
+                self.end_cycle()
 
                 self.add("debug", ("vcompare", tmp_val, [(round, i + j, "hash_stage", 3) for j in range(VLEN)]))
 
                 # val = (val << 3) + (val + 0xFD7046C5)
                 # val = val * 9 + 0xFD7046C5
-                self.add2("valu", ("vbroadcast", tmp1, self.scratch_const(9)))
-                self.add2("valu", ("vbroadcast", tmp2, self.scratch_const(0xFD7046C5)))
-                self.end_cycle()
-                self.add("valu", ("multiply_add", tmp_val, tmp_val, tmp1, tmp2))
-
-                self.add("debug", ("vcompare", tmp_val, [(round, i + j, "hash_stage", 4) for j in range(VLEN)]))
+                self.add2("valu", ("multiply_add", tmp_val, tmp_val, tmp1, tmp2))
 
                 self.add2("valu", ("vbroadcast", tmp1, self.scratch_const(0xB55A4F09)))
                 self.add2("valu", ("vbroadcast", tmp2, self.scratch_const(16)))
                 self.end_cycle()
+
+                self.add("debug", ("vcompare", tmp_val, [(round, i + j, "hash_stage", 4) for j in range(VLEN)]))
+
                 self.add2(*("valu", ("^", tmp1, tmp_val, tmp1)))
                 self.add2(*("valu", (">>", tmp2, tmp_val, tmp2)))
                 self.end_cycle()
-                self.add(*("valu", ("^", tmp_val, tmp1, tmp2)))
 
-                self.add("debug", ("vcompare", tmp_val, [(round, i + j, "hash_stage", 5) for j in range(VLEN)]))
-                self.add("debug", ("vcompare", tmp_val, [(round, i + j, "hashed_val") for j in range(VLEN)]))
+                self.add2(*("valu", ("^", tmp_val, tmp1, tmp2)))
 
                 # idx = 2*idx + (1 if val % 2 == 0 else 2)
                 # idx = 2*idx + (0 if val % 2 == 0 else 1) + 1
@@ -229,6 +236,10 @@ class KernelBuilder:
                 self.add2("valu", ("vbroadcast", tmp1, one_const))
                 self.add2("valu", ("vbroadcast", tmp3, two_const))
                 self.end_cycle()
+
+                self.add("debug", ("vcompare", tmp_val, [(round, i + j, "hash_stage", 5) for j in range(VLEN)]))
+                self.add("debug", ("vcompare", tmp_val, [(round, i + j, "hashed_val") for j in range(VLEN)]))
+
                 self.add2("valu", ("&", tmp2, tmp_val, tmp1))
                 self.add2("valu", ("multiply_add", tmp_idx, tmp_idx, tmp3, tmp1))
                 self.end_cycle()
@@ -247,15 +258,9 @@ class KernelBuilder:
                 # mem[inp_indices_p + i] = idx
                 # mem[inp_values_p + i] = val
 
-                for j in range(VLEN):
-                    self.add("alu", ("+", tmp_addr, self.scratch["inp_indices_p"], self.scratch_const(i + j)))
-                    self.add("store", ("store", tmp_addr, tmp_idx + j))
-                    self.add("alu", ("+", tmp_addr, self.scratch["inp_values_p"], self.scratch_const(i + j)))
-                    self.add("store", ("store", tmp_addr, tmp_val + j))
-
-                #self.add2(*("store", ("vstore", indices_p_i, tmp_idx)))
-                #self.add2(*("store", ("vstore", values_p_i, tmp_val)))
-                #self.end_cycle()
+                self.add2(*("store", ("vstore", indices_p_i, tmp_idx)))
+                self.add2(*("store", ("vstore", values_p_i, tmp_val)))
+                self.end_cycle()
 
         # Required to match with the yield in reference_kernel2
         self.instrs.append({"flow": [("pause",)]})
