@@ -16,6 +16,21 @@ anything in the tests/ folder.
 We recommend you look through problem.py next.
 """
 
+"""
+# Notes
+
+This person has written a big blog post about this problem https://github.com/stalkermustang/original_performance_takehome
+
+Improvements that can be made:
+- Add an instruction scheduler
+- Invert the batch/round loops. This way you only have to read/write the indices and values once instead of batch times.
+- Overlap the gather with the hash computation. This might happen automagically with an instruction scheduler.
+- Use the ALU cores in addition to the VALU cores. The VALU cores are more powerful, but not using the ALU cores for computation is a waste.
+- I saw someone loading the first few levels of the tree into scratch memory and using a vselect to use it instead of having to load_offset it.
+  Effectively caching a part of the tree.
+
+"""
+
 from collections import defaultdict
 import random
 import unittest
