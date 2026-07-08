@@ -29,6 +29,10 @@ Improvements that can be made:
 - I saw someone loading the first few levels of the tree into scratch memory and using a vselect to use it instead of having to load_offset it.
   Effectively caching a part of the tree.
 
+
+- 6499, increment i_const instead of loading a const each time.
+- 6241, eliminate some unnecessary vbroadcasts
+
 """
 
 from collections import defaultdict
@@ -132,7 +136,11 @@ class KernelBuilder:
         tmp2 = self.alloc_scratch("tmp2", VLEN)
         tmp3 = self.alloc_scratch("tmp3", VLEN)
         tmp4 = self.alloc_scratch("tmp4", VLEN)
+        vconst_0 = self.alloc_scratch("vconst_0", VLEN)
+        vconst_1 = self.alloc_scratch("vconst_1", VLEN)
+        vconst_2 = self.alloc_scratch("vconst_2", VLEN)
 
+        # Load all variables
         self.add("load", ("vload", self.scratch["rounds"], zero_const))
 
         # Pause instructions are matched up with yield statements in the reference
@@ -151,77 +159,97 @@ class KernelBuilder:
 
         indices_p_i = self.alloc_scratch("indices_p_i", 2)
         values_p_i = self.alloc_scratch("values_p_i", 2)
+        vforest_values_p = self.alloc_scratch("vforest_values_p", VLEN)
+        vn_nodes = self.alloc_scratch("vn_nodes", VLEN)
+        step_const = self.scratch_const(2*VLEN)
 
-        for round in range(rounds):
-            # Assumes that batch_size is always a multiple of 2*VLEN 
-            for i in range(0, batch_size, 2*VLEN):
-                i_const = self.scratch_const(i)
+        const_hash_stage = [[self.alloc_scratch(f"const_hash_{i}_{j}", VLEN) for j in range(2)] for i in range(6)]
 
-                # idx = mem[inp_indices_p + i]
-                # val = mem[inp_values_p + i]
-                self.add2(*("alu", ("+", indices_p_i, self.scratch["inp_indices_p"], i_const)))
-                self.add2(*("alu", ("+", values_p_i, self.scratch["inp_values_p"], i_const)))
-                self.end_cycle()
-                self.add2("load", ("vload", tmp_idx, indices_p_i))
-                self.add2("load", ("vload", tmp_val, values_p_i))
-                self.add2("alu", ("+", indices_p_i + 1, indices_p_i, self.scratch_const(8)))
-                self.add2("alu", ("+", values_p_i + 1, values_p_i, self.scratch_const(8)))
-                self.add2("valu", ("vbroadcast", tmp1, self.scratch["forest_values_p"]))
-                self.end_cycle()
+        HASH_CONSTS = [
+            [ 0x7ED55D16, 0xC761C23C, 0x165667B1, 0xD3A2646C, 0xFD7046C5, 0xB55A4F09, ],
+            [       4097,         19,         33,          9,          9,         16, ],
+        ]
+        for j,consts in enumerate(HASH_CONSTS):
+            self.add2("load", ("const", tmp1+0, consts[0]))
+            self.add2("load", ("const", tmp1+1, consts[1]))
+            self.end_cycle()
+            self.add2("load", ("const", tmp1+2, consts[2]))
+            self.add2("load", ("const", tmp1+3, consts[3]))
+            self.end_cycle()
+            self.add2("load", ("const", tmp1+4, consts[4]))
+            self.add2("load", ("const", tmp1+5, consts[5]))
+            self.end_cycle()
 
-                self.add2(*("valu", ("+", tmp_addr, tmp1, tmp_idx)))
-                self.add2("load", ("vload", tmp_idx + 8, indices_p_i + 1))
-                self.add2("load", ("vload", tmp_val + 8, values_p_i + 1))
-                self.end_cycle()
+            for i,c in enumerate(consts):
+                self.add2("valu", ("vbroadcast", const_hash_stage[i][j], tmp1+i))
+            self.end_cycle()
 
-                self.add2(*("valu", ("+", tmp_addr + 8, tmp1, tmp_idx + 8)))
-                self.end_cycle()
+        self.add2("valu", ("vbroadcast", vforest_values_p, self.scratch["forest_values_p"]))
+        self.add2("valu", ("vbroadcast", vn_nodes, self.scratch["n_nodes"]))
+        self.add2("valu", ("vbroadcast", vconst_0, zero_const))
+        self.add2("valu", ("vbroadcast", vconst_1, one_const))
+        self.add2("valu", ("vbroadcast", vconst_2, two_const))
+        self.end_cycle()
 
+        i_const = self.alloc_scratch("i_const", 1) # scratch memory is initialized to zero
+
+        # Assumes that batch_size is always a multiple of 2*VLEN
+        for i in range(0, batch_size, 2*VLEN):
+            # idx = mem[inp_indices_p + i]
+            # val = mem[inp_values_p + i]
+            self.add2(*("alu", ("+", indices_p_i, self.scratch["inp_indices_p"], i_const)))
+            self.add2(*("alu", ("+", values_p_i, self.scratch["inp_values_p"], i_const)))
+            self.end_cycle()
+            self.add2("load", ("vload", tmp_idx, indices_p_i))
+            self.add2("load", ("vload", tmp_val, values_p_i))
+            self.add2("alu", ("+", indices_p_i + 1, indices_p_i, self.scratch_const(8)))
+            self.add2("alu", ("+", values_p_i + 1, values_p_i, self.scratch_const(8)))
+            self.end_cycle()
+
+            self.add2("load", ("vload", tmp_idx + 8, indices_p_i + 1))
+            self.add2("load", ("vload", tmp_val + 8, values_p_i + 1))
+            self.end_cycle()
+
+            for round in range(rounds):
                 self.add("debug", ("vcompare", tmp_val,     [(round, i + j, "val")     for j in range(VLEN)]))
                 self.add("debug", ("vcompare", tmp_idx,     [(round, i + j, "idx")     for j in range(VLEN)]))
                 self.add("debug", ("vcompare", tmp_val + 8, [(round, i + j + 8, "val") for j in range(VLEN)]))
                 self.add("debug", ("vcompare", tmp_idx + 8, [(round, i + j + 8, "idx") for j in range(VLEN)]))
+
+                self.add2(*("valu", ("+", tmp_addr, vforest_values_p, tmp_idx)))
+                self.add2(*("valu", ("+", tmp_addr + 8, vforest_values_p, tmp_idx + 8)))
+                self.end_cycle()
 
                 # node_val = mem[forest_values_p + idx]
                 for j in range(VLEN):
                     self.add2(*("load", ("load_offset", tmp_node_val, tmp_addr, j)))
                     self.add2(*("load", ("load_offset", tmp_node_val, tmp_addr, 8+j)))
                     self.end_cycle()
+
                     self.add("debug", ("compare", tmp_node_val + j, (round, i + j, "node_val")))
                     self.add("debug", ("compare", tmp_node_val + 8+j, (round, i + 8+j, "node_val")))
                 
-                #self.add("debug", ("vcompare", tmp_node_val, [(round, i + j, "node_val") for j in range(VLEN)]))
-
                 # val = val ^ node_val
                 self.add2(*("valu", ("^", tmp_val, tmp_val, tmp_node_val)))
                 self.add2(*("valu", ("^", tmp_val+8, tmp_val+8, tmp_node_val+8)))
-
-                # val = val * 4097 + 0x7ED55D16
-                self.add2("valu", ("vbroadcast", tmp1, self.scratch_const(4097)))
-                self.add2("valu", ("vbroadcast", tmp2, self.scratch_const(0x7ED55D16)))
                 self.end_cycle()
 
-                self.add2("valu", ("multiply_add", tmp_val, tmp_val, tmp1, tmp2))
-                self.add2("valu", ("multiply_add", tmp_val+8, tmp_val+8, tmp1, tmp2))
-
-                self.add2("valu", ("vbroadcast", tmp1, self.scratch_const(0xC761C23C)))
-                self.add2("valu", ("vbroadcast", tmp2, self.scratch_const(19)))
+                # val = val * 4097 + 0x7ED55D16
+                self.add2("valu", ("multiply_add", tmp_val,   tmp_val,   const_hash_stage[0][1], const_hash_stage[0][0]))
+                self.add2("valu", ("multiply_add", tmp_val+8, tmp_val+8, const_hash_stage[0][1], const_hash_stage[0][0]))
                 self.end_cycle()
 
                 self.add("debug", ("vcompare", tmp_val, [(round, i + j, "hash_stage", 0) for j in range(VLEN)]))
                 self.add("debug", ("vcompare", tmp_val+8, [(round, i + 8+j, "hash_stage", 0) for j in range(VLEN)]))
 
-                self.add2(*("valu", ("^",  tmp1, tmp_val,   tmp1)))
-                self.add2(*("valu", (">>", tmp2, tmp_val,   tmp2)))
-                self.add2(*("valu", ("^",  tmp3, tmp_val+8, tmp1)))
-                self.add2(*("valu", (">>", tmp4, tmp_val+8, tmp2)))
+                self.add2(*("valu", ("^",  tmp1, tmp_val,   const_hash_stage[1][0])))
+                self.add2(*("valu", (">>", tmp2, tmp_val,   const_hash_stage[1][1])))
+                self.add2(*("valu", ("^",  tmp3, tmp_val+8, const_hash_stage[1][0])))
+                self.add2(*("valu", (">>", tmp4, tmp_val+8, const_hash_stage[1][1])))
                 self.end_cycle()
 
                 self.add2(*("valu", ("^", tmp_val,   tmp1, tmp2)))
                 self.add2(*("valu", ("^", tmp_val+8, tmp3, tmp4)))
-
-                self.add2("valu", ("vbroadcast", tmp1, self.scratch_const(33)))
-                self.add2("valu", ("vbroadcast", tmp2, self.scratch_const(0x165667B1)))
                 self.end_cycle()
 
                 self.add("debug", ("vcompare", tmp_val, [(round, i + j, "hash_stage", 1) for j in range(VLEN)]))
@@ -229,28 +257,22 @@ class KernelBuilder:
 
                 # val = (val << 5) + (val + 0x165667B1)
                 # val = val * 33 + 0x165667B1
-                self.add2("valu", ("multiply_add", tmp_val, tmp_val, tmp1, tmp2))
-                self.add2("valu", ("multiply_add", tmp_val+8, tmp_val+8, tmp1, tmp2))
-
-                self.add2("valu", ("vbroadcast", tmp1, self.scratch_const(0xD3A2646C)))
-                self.add2("valu", ("vbroadcast", tmp2, self.scratch_const(9)))
+                self.add2("valu", ("multiply_add", tmp_val,   tmp_val,   const_hash_stage[2][1], const_hash_stage[2][0]))
+                self.add2("valu", ("multiply_add", tmp_val+8, tmp_val+8, const_hash_stage[2][1], const_hash_stage[2][0]))
                 self.end_cycle()
 
                 self.add("debug", ("vcompare", tmp_val, [(round, i + j, "hash_stage", 2) for j in range(VLEN)]))
                 self.add("debug", ("vcompare", tmp_val+8, [(round, i + 8+j, "hash_stage", 2) for j in range(VLEN)]))
 
                 # val = (val << 9) ^ (val + 0xD3A2646C)
-                self.add2("valu", ("+",  tmp1, tmp_val, tmp1))
-                self.add2("valu", ("<<", tmp2, tmp_val, tmp2))
-                self.add2("valu", ("+",  tmp3, tmp_val+8, tmp1))
-                self.add2("valu", ("<<", tmp4, tmp_val+8, tmp2))
+                self.add2("valu", ("+",  tmp1, tmp_val,   const_hash_stage[3][0]))
+                self.add2("valu", ("<<", tmp2, tmp_val,   const_hash_stage[3][1]))
+                self.add2("valu", ("+",  tmp3, tmp_val+8, const_hash_stage[3][0]))
+                self.add2("valu", ("<<", tmp4, tmp_val+8, const_hash_stage[3][1]))
                 self.end_cycle()
 
-                self.add2("valu", ("^", tmp_val, tmp1, tmp2))
+                self.add2("valu", ("^", tmp_val,   tmp1, tmp2))
                 self.add2("valu", ("^", tmp_val+8, tmp3, tmp4))
-
-                self.add2("valu", ("vbroadcast", tmp1, self.scratch_const(9)))
-                self.add2("valu", ("vbroadcast", tmp2, self.scratch_const(0xFD7046C5)))
                 self.end_cycle()
 
                 self.add("debug", ("vcompare", tmp_val, [(round, i + j, "hash_stage", 3) for j in range(VLEN)]))
@@ -258,70 +280,64 @@ class KernelBuilder:
 
                 # val = (val << 3) + (val + 0xFD7046C5)
                 # val = val * 9 + 0xFD7046C5
-                self.add2("valu", ("multiply_add", tmp_val, tmp_val, tmp1, tmp2))
-                self.add2("valu", ("multiply_add", tmp_val+8, tmp_val+8, tmp1, tmp2))
-
-                self.add2("valu", ("vbroadcast", tmp1, self.scratch_const(0xB55A4F09)))
-                self.add2("valu", ("vbroadcast", tmp2, self.scratch_const(16)))
+                self.add2("valu", ("multiply_add", tmp_val,   tmp_val,   const_hash_stage[4][1], const_hash_stage[4][0]))
+                self.add2("valu", ("multiply_add", tmp_val+8, tmp_val+8, const_hash_stage[4][1], const_hash_stage[4][0]))
                 self.end_cycle()
 
                 self.add("debug", ("vcompare", tmp_val, [(round, i + j, "hash_stage", 4) for j in range(VLEN)]))
                 self.add("debug", ("vcompare", tmp_val+8, [(round, i + 8+j, "hash_stage", 4) for j in range(VLEN)]))
 
-                self.add2(*("valu", ("^",  tmp1, tmp_val, tmp1)))
-                self.add2(*("valu", (">>", tmp2, tmp_val, tmp2)))
-                self.add2(*("valu", ("^",  tmp3, tmp_val+8, tmp1)))
-                self.add2(*("valu", (">>", tmp4, tmp_val+8, tmp2)))
+                self.add2(*("valu", ("^",  tmp1, tmp_val,   const_hash_stage[5][0])))
+                self.add2(*("valu", (">>", tmp2, tmp_val,   const_hash_stage[5][1])))
+                self.add2(*("valu", ("^",  tmp3, tmp_val+8, const_hash_stage[5][0])))
+                self.add2(*("valu", (">>", tmp4, tmp_val+8, const_hash_stage[5][1])))
                 self.end_cycle()
 
-                self.add2(*("valu", ("^", tmp_val, tmp1, tmp2)))
+                self.add2(*("valu", ("^", tmp_val,   tmp1, tmp2)))
                 self.add2(*("valu", ("^", tmp_val+8, tmp3, tmp4)))
+                self.end_cycle()
 
                 # idx = 2*idx + (1 if val % 2 == 0 else 2)
                 # idx = 2*idx + (0 if val % 2 == 0 else 1) + 1
                 # idx = (2*idx) + (val & 1) + 1
-                self.add2("valu", ("vbroadcast", tmp1, one_const))
-                self.add2("valu", ("vbroadcast", tmp3, two_const))
-                self.end_cycle()
 
                 self.add("debug", ("vcompare", tmp_val, [(round, i + j, "hash_stage", 5) for j in range(VLEN)]))
                 self.add("debug", ("vcompare", tmp_val+8, [(round, i + 8+j, "hash_stage", 5) for j in range(VLEN)]))
                 self.add("debug", ("vcompare", tmp_val, [(round, i + j, "hashed_val") for j in range(VLEN)]))
                 self.add("debug", ("vcompare", tmp_val+8, [(round, i + 8+j, "hashed_val") for j in range(VLEN)]))
 
-                self.add2("valu", ("&", tmp2, tmp_val, tmp1))
-                self.add2("valu", ("&", tmp4, tmp_val+8, tmp1))
-                self.add2("valu", ("multiply_add", tmp_idx, tmp_idx, tmp3, tmp1))
-                self.add2("valu", ("multiply_add", tmp_idx+8, tmp_idx+8, tmp3, tmp1))
+                self.add2("valu", ("&", tmp2, tmp_val,   vconst_1))
+                self.add2("valu", ("&", tmp4, tmp_val+8, vconst_1))
+                self.add2("valu", ("multiply_add", tmp_idx,   tmp_idx,   vconst_2, vconst_1))
+                self.add2("valu", ("multiply_add", tmp_idx+8, tmp_idx+8, vconst_2, vconst_1))
                 self.end_cycle()
-                self.add2("valu", ("multiply_add", tmp_idx, tmp_idx, tmp1, tmp2))
-                self.add2("valu", ("multiply_add", tmp_idx+8, tmp_idx+8, tmp1, tmp4))
-                self.add("valu", ("vbroadcast", tmp3, self.scratch["n_nodes"]))
+                self.add2("valu", ("multiply_add", tmp_idx,   tmp_idx,   vconst_1, tmp2))
+                self.add2("valu", ("multiply_add", tmp_idx+8, tmp_idx+8, vconst_1, tmp4))
                 self.end_cycle()
 
                 self.add("debug", ("vcompare", tmp_idx, [(round, i + j, "next_idx") for j in range(VLEN)]))
                 self.add("debug", ("vcompare", tmp_idx+8, [(round, i + 8+j, "next_idx") for j in range(VLEN)]))
 
                 # idx = 0 if idx >= n_nodes else idx
-                self.add2("valu", ("<", tmp1, tmp_idx, tmp3))
-                self.add2("valu", ("<", tmp2, tmp_idx+8, tmp3))
-                self.add2("valu", ("vbroadcast", tmp3, zero_const))
+                self.add2("valu", ("<", tmp1, tmp_idx,   vn_nodes))
+                self.add2("valu", ("<", tmp2, tmp_idx+8, vn_nodes))
                 self.end_cycle()
-                self.add(*("flow", ("vselect", tmp_idx, tmp1, tmp_idx, tmp3)))
-                self.add(*("flow", ("vselect", tmp_idx+8, tmp2, tmp_idx+8, tmp3)))
+                self.add(*("flow", ("vselect", tmp_idx,   tmp1, tmp_idx,   vconst_0)))
+                self.add(*("flow", ("vselect", tmp_idx+8, tmp2, tmp_idx+8, vconst_0)))
 
                 self.add("debug", ("vcompare", tmp_idx, [(round, i + j, "wrapped_idx") for j in range(VLEN)]))
 
-                # mem[inp_indices_p + i] = idx
-                # mem[inp_values_p + i] = val
+            # mem[inp_indices_p + i] = idx
+            # mem[inp_values_p + i] = val
 
-                self.add2(*("store", ("vstore", indices_p_i, tmp_idx)))
-                self.add2(*("store", ("vstore", values_p_i, tmp_val)))
-                self.end_cycle()
+            self.add2(*("store", ("vstore", indices_p_i, tmp_idx)))
+            self.add2(*("store", ("vstore", values_p_i, tmp_val)))
+            self.end_cycle()
 
-                self.add2(*("store", ("vstore", indices_p_i+1, tmp_idx+8)))
-                self.add2(*("store", ("vstore", values_p_i+1, tmp_val+8)))
-                self.end_cycle()
+            self.add2(*("store", ("vstore", indices_p_i+1, tmp_idx+8)))
+            self.add2(*("store", ("vstore", values_p_i+1, tmp_val+8)))
+            self.add2("alu", ("+", i_const, i_const, step_const))
+            self.end_cycle()
 
 
         # Required to match with the yield in reference_kernel2
