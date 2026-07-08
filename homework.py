@@ -116,57 +116,55 @@ class KernelBuilder:
             insts.append({"debug": [("compare", node_val + 2*j+1, (round, i + 2*j+1, "node_val"))]})
 
         # val = val ^ node_val
-        self.add("valu", ("^", val, val, node_val))
+        insts.append({"valu": [("^", val, val, node_val)]})
 
         # val = val * 4097 + 0x7ED55D16
-        self.add("valu", ("multiply_add", val, val, const_hash_stage[0][1], const_hash_stage[0][0]))
-        self.add("debug", ("vcompare", val, [(round, i + j, "hash_stage", 0) for j in range(VLEN)]))
+        insts.append({"valu": [("multiply_add", val, val, const_hash_stage[0][1], const_hash_stage[0][0])]})
+        insts.append({"debug": [("vcompare", val, [(round, i + j, "hash_stage", 0) for j in range(VLEN)])]})
 
-        self.add2("valu", ("^",  tmp1, val, const_hash_stage[1][0]))
-        self.add2("valu", (">>", tmp2, val, const_hash_stage[1][1]))
-        self.end_cycle()
-        self.add("valu", ("^", val, tmp1, tmp2))
-        self.add("debug", ("vcompare", val, [(round, i + j, "hash_stage", 1) for j in range(VLEN)]))
+        insts.append({"valu": [("^",  tmp1, val, const_hash_stage[1][0]),
+                               (">>", tmp2, val, const_hash_stage[1][1])]})
+        insts.append({"valu": [("^", val, tmp1, tmp2)]})
+        insts.append({"debug": [("vcompare", val, [(round, i + j, "hash_stage", 1) for j in range(VLEN)])]})
 
         # val = (val << 5) + (val + 0x165667B1)
         # val = val * 33 + 0x165667B1
-        self.add("valu", ("multiply_add", val, val, const_hash_stage[2][1], const_hash_stage[2][0]))
-        self.add("debug", ("vcompare", val, [(round, i + j, "hash_stage", 2) for j in range(VLEN)]))
+        insts.append({"valu": [("multiply_add", val, val, const_hash_stage[2][1], const_hash_stage[2][0])]})
+        insts.append({"debug": [("vcompare", val, [(round, i + j, "hash_stage", 2) for j in range(VLEN)])]})
 
         # val = (val << 9) ^ (val + 0xD3A2646C)
-        self.add2("valu", ("+",  tmp1, val, const_hash_stage[3][0]))
-        self.add2("valu", ("<<", tmp2, val, const_hash_stage[3][1]))
-        self.end_cycle()
-        self.add("valu", ("^", val, tmp1, tmp2))
-        self.add("debug", ("vcompare", val, [(round, i + j, "hash_stage", 3) for j in range(VLEN)]))
+        insts.append({"valu": [("+",  tmp1, val, const_hash_stage[3][0]),
+                               ("<<", tmp2, val, const_hash_stage[3][1])]})
+        insts.append({"valu": [("^", val, tmp1, tmp2)]})
+        insts.append({"debug": [("vcompare", val, [(round, i + j, "hash_stage", 3) for j in range(VLEN)])]})
 
         # val = (val << 3) + (val + 0xFD7046C5)
         # val = val * 9 + 0xFD7046C5
-        self.add("valu", ("multiply_add", val, val, const_hash_stage[4][1], const_hash_stage[4][0]))
-        self.add("debug", ("vcompare", val, [(round, i + j, "hash_stage", 4) for j in range(VLEN)]))
+        insts.append({"valu": [("multiply_add", val, val, const_hash_stage[4][1], const_hash_stage[4][0])]})
+        insts.append({"debug": [("vcompare", val, [(round, i + j, "hash_stage", 4) for j in range(VLEN)])]})
 
-        self.add2("valu", ("^",  tmp1, val, const_hash_stage[5][0]))
-        self.add2("valu", (">>", tmp2, val, const_hash_stage[5][1]))
-        self.end_cycle()
-        self.add("valu", ("^", val, tmp1, tmp2))
-        self.add("debug", ("vcompare", val, [(round, i + j,   "hash_stage", 5) for j in range(VLEN)]))
+        insts.append({"valu": [("^",  tmp1, val, const_hash_stage[5][0]),
+                               (">>", tmp2, val, const_hash_stage[5][1])]})
+        insts.append({"valu": [("^", val, tmp1, tmp2)]})
+        insts.append({"debug": [("vcompare", val, [(round, i + j,   "hash_stage", 5) for j in range(VLEN)])]})
 
-        self.add("debug", ("vcompare", val, [(round, i + j,   "hashed_val") for j in range(VLEN)]))
+        insts.append({"debug": [("vcompare", val, [(round, i + j,   "hashed_val") for j in range(VLEN)])]})
 
         # idx = 2*idx + (1 if val % 2 == 0 else 2)
         # idx = 2*idx + (0 if val % 2 == 0 else 1) + 1
         # idx = (2*idx) + (val & 1) + 1
 
-        self.add2("valu", ("&", tmp2, val, vconst["1"]))
-        self.add2("valu", ("multiply_add", idx, idx, vconst["2"], vconst["1"]))
-        self.end_cycle()
-        self.add("valu", ("multiply_add", idx, idx, vconst["1"], tmp2))
-        self.add("debug", ("vcompare", idx, [(round, i + j, "next_idx") for j in range(VLEN)]))
+        insts.append({"valu": [("&", tmp2, val, vconst["1"]),
+                               ("multiply_add", idx, idx, vconst["2"], vconst["1"])]})
+        insts.append({"valu": [("multiply_add", idx, idx, vconst["1"], tmp2)]})
+        insts.append({"debug": [("vcompare", idx, [(round, i + j, "next_idx") for j in range(VLEN)])]})
 
         # idx = 0 if idx >= n_nodes else idx
-        self.add("valu", ("<", tmp1, idx, vconst["n_nodes"]))
-        self.add("flow", ("vselect", idx, tmp1, idx, vconst["0"]))
-        self.add("debug", ("vcompare", idx, [(round, i + j, "wrapped_idx") for j in range(VLEN)]))
+        insts.append({"valu": [("<", tmp1, idx, vconst["n_nodes"])]})
+        insts.append({"flow": [("vselect", idx, tmp1, idx, vconst["0"])]})
+        insts.append({"debug": [("vcompare", idx, [(round, i + j, "wrapped_idx") for j in range(VLEN)])]})
+
+        self.instrs.extend(insts)
 
     def build_gather(self, vforest_values_p, tmp_addr, tmp_idx, tmp_node_val, round, i):
         self.add2(*("valu", ("+", tmp_addr,   vforest_values_p, tmp_idx)))
@@ -239,7 +237,7 @@ class KernelBuilder:
         values_p_i = self.alloc_scratch("values_p_i", 2)
         vforest_values_p = self.alloc_scratch("vforest_values_p", VLEN)
         vn_nodes = self.alloc_scratch("vn_nodes", VLEN)
-        step_const = self.scratch_const(VLEN)
+        step_const = self.scratch_const(2*VLEN)
 
         const_hash_stage = [[self.alloc_scratch(f"const_hash_{i}_{j}", VLEN) for j in range(2)] for i in range(6)]
 
@@ -280,7 +278,7 @@ class KernelBuilder:
         i_const = self.alloc_scratch("i_const", 1) # scratch memory is initialized to zero
 
         # Assumes that batch_size is always a multiple of 2*VLEN
-        for i in range(0, batch_size, VLEN):
+        for i in range(0, batch_size, 2*VLEN):
             # idx = mem[inp_indices_p + i]
             # val = mem[inp_values_p + i]
             self.add2(*("alu", ("+", indices_p_i, self.scratch["inp_indices_p"], i_const)))
@@ -294,6 +292,7 @@ class KernelBuilder:
                 self.add("debug", ("vcompare", tmp_val,     [(round, i + j, "val")     for j in range(VLEN)]))
                 self.add("debug", ("vcompare", tmp_idx,     [(round, i + j, "idx")     for j in range(VLEN)]))
 
+                self.build_batch_step(round, i, tmp_val, tmp_node_val, tmp_idx, tmp1, tmp2, const_hash_stage, vconst)
                 self.build_batch_step(round, i, tmp_val, tmp_node_val, tmp_idx, tmp1, tmp2, const_hash_stage, vconst)
 
             # mem[inp_indices_p + i] = idx
